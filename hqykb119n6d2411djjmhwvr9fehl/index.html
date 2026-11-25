@@ -2590,8 +2590,10 @@ function rpYear(){ const Yd=yearData(), {acc,T,last}=Yd; const preview=!last.fin
 function editYearNotes(){ openModal(`<h3>📝 보고사항 고치기</h3><p class="hint">한 줄에 하나씩 적어 주세요. ‘1.’ ‘2.’처럼 번호로 시작하면 항목이 되고, 번호 없는 줄은 앞 항목에 이어져요.</p>
    <textarea id="yn-t" style="width:100%;min-height:240px;font-size:16px;line-height:1.5">${h(yearNotesText())}</textarea>
    <div class="acts"><button class="btn ghost" id="yn-reset">기본 내용으로</button><button class="btn ghost" id="yn-x">취소</button><button class="btn" id="yn-ok">저장</button></div>`);
-  $('#yn-x').onclick=closeModal; $('#yn-reset').onclick=()=>{ $('#yn-t').value=CFG.yearNotes||''; };
-  $('#yn-ok').onclick=()=>{ const v=$('#yn-t').value.replace(/\s+$/,''); const nn=t=>String(t||'').split('\n').map(x=>x.trim()).filter(Boolean).join('\n'); if(nn(v)===nn(CFG.yearNotes)) delete S.settings.yearNotes; else S.settings.yearNotes=v; save(); closeModal(); renderRview(); toast('보고사항을 저장했어요'); }; }
+  $('#yn-x').onclick=closeModal;
+  // 한 번 누르면 바로 기본 내용(재정봇이 올린 최신 보고사항)으로 저장 → 앞으로 올라오는 보고사항도 이 기기에 저절로 나옴
+  $('#yn-reset').onclick=()=>{ if(!CFG.yearNotes){ toast('아직 기본 보고사항이 없어요. 인터넷을 켜고 앱을 다시 열어 주세요'); return; } delete S.settings.yearNotes; save(); closeModal(); renderRview(); toast('기본 보고사항으로 바꿨어요'); };
+  $('#yn-ok').onclick=()=>{ const v=$('#yn-t').value.replace(/\s+$/,''); if(String(v).replace(/\s+/g,'')===String(CFG.yearNotes||'').replace(/\s+/g,'')) delete S.settings.yearNotes; else S.settings.yearNotes=v; save(); closeModal(); renderRview(); toast('보고사항을 저장했어요'); }; }
 Object.assign(window.HM,{yearData:()=>{ const y=yearData(); return {acc:y.acc,inc:r2(y.T.inc),exp:r2(y.T.exp),dist:y.DIST,incRows:y.incRows.map(r=>[r[1],r[2]]),expRows:y.expRows.map(r=>[r[1],r[2]]),months:y.months.map(x=>[x.m,r2(x.T.inc),r2(x.T.exp)]),last:y.last}; }});
 
 /* ===================== 문서 자동 인식 (에지 + 허프 직선 + 사각형 점수, 밝은 덩어리 보조) ===================== */
@@ -3027,28 +3029,32 @@ function syncApply(pl){ const t=new Date().toISOString(), imps=S.settings.import
   pl.fixes.forEach(({f,e})=>{ if(e) Object.assign(e,f.to.key?{key:f.to.key}:{},f.to.a!=null?{amount:r2(f.to.a)}:{},f.to.m!=null?{memo:f.to.m}:{}); dn['f:'+f.id]=t; });
   pl.dels.forEach(({x,e})=>{ if(e) S.entries=S.entries.filter(y=>y!==e); dn['d:'+x.id]=t; });
   S.settings.syncSeq=Math.max(+S.settings.syncSeq||0,+SYNC_PENDING?.seq||0); save(); }
-/* 연말정산 기본 보고사항(yearNotes) 받기 — 이미 설치된 기기의 기본값만 바꿈. 그 기기에서 직접 고친 보고사항(S.settings.yearNotes)이 있으면 그것이 계속 우선 */
-async function syncNotes(d){ const y=d&&d.yearNotes; if(!y||typeof y.text!=='string'||!y.id) return; const dn=syncDone(); if(dn['y:'+y.id]) return;
-  // 기기에서 고친 글이 예전 기본값과 똑같으면(=권사님이 확인한 글) 새 기본값을 따르게 함. 다른 글이면 그대로 둠
-  const own=S.settings.yearNotes; if(typeof own==='string' && Array.isArray(y.prev) && y.prev.length && crypto.subtle){ try{
-    const n=own.split('\n').map(x=>x.trim()).filter(Boolean).join('\n'); const hb=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(n));
-    const hx=[...new Uint8Array(hb)].map(b=>b.toString(16).padStart(2,'0')).join(''); if(y.prev.includes(hx)) delete S.settings.yearNotes; }catch(e){} }
-  CFG.yearNotes=y.text; try{ const c=JSON.parse(LS.getItem(CKEY)); if(c&&Array.isArray(c.accounts)){ c.config=c.config||{}; c.config.yearNotes=y.text; LS.setItem(CKEY,JSON.stringify(c)); } }catch(e){}
-  dn['y:'+y.id]=new Date().toISOString(); save(); }
+/* 연말정산 기본 보고사항(yearNotes) 받기 — 이미 설치된 기기의 기본값을 바꿈.
+   그 기기에서 직접 고친 글(S.settings.yearNotes)이 예전 기본값이나 새 기본값과 (띄어쓰기·줄바꿈만 빼고) 같으면 그 글을 지우고 기본값을 따르게 함. 다른 글이면 그대로 둠. */
+const nzNotes=t=>String(t||'').replace(/\s+/g,'');
+async function sha256hex(t){ const hb=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t)); return [...new Uint8Array(hb)].map(b=>b.toString(16).padStart(2,'0')).join(''); }
+async function syncNotes(d){ const y=d&&d.yearNotes; if(!y||typeof y.text!=='string'||!y.id) return; const dn=syncDone();
+  const own=S.settings.yearNotes; let clear=false;
+  if(typeof own==='string'){ if(nzNotes(own)===nzNotes(y.text)) clear=true;
+    else if(crypto.subtle && Array.isArray(y.prevz) && y.prevz.length){ try{ clear=y.prevz.includes(await sha256hex(nzNotes(own))); }catch(e){} } }
+  S.settings.notesV2=1; if(clear) delete S.settings.yearNotes;
+  if(!dn['y:'+y.id]){ CFG.yearNotes=y.text; try{ const c=JSON.parse(LS.getItem(CKEY)); if(c&&Array.isArray(c.accounts)){ c.config=c.config||{}; c.config.yearNotes=y.text; LS.setItem(CKEY,JSON.stringify(c)); } }catch(e){}
+    dn['y:'+y.id]=new Date().toISOString(); }
+  save(); if(clear && typeof renderRview==='function' && document.querySelector('.rp-year')) try{ renderRview(); }catch(e){} }
 const mdOf=s=>{ const [,m,d]=s.split('-').map(Number); return m+'/'+d; };
 function syncNote(pl){ const ds=[...pl.dates].sort().map(mdOf); return (ds.length?ds.join(', ')+' 기록이 들어왔어요':'새 기록이 들어왔어요')+(pl.dup?` (이미 있던 ${pl.dup}건은 그대로)`:''); }
 function syncBanner(pl){ if($('#h-sync')) $('#h-sync').remove(); const ba=document.querySelector('#v-home .bigacts'); if(!ba) return; const n=document.createElement('button'); n.id='h-sync'; n.className='imnote';
   n.innerHTML=`📥 ${[...pl.dates].sort().map(mdOf).join(', ')||'새'} 기록이 왔어요 · <b>새 기록 받기</b>`; n.onclick=()=>{ syncApply(pl); n.remove(); SYNC_PENDING=null; toastU('✅ '+syncNote(pl)); if(CUR==='home') RENDER.home(); }; ba.before(n); }
 async function syncCheck(opt){ opt=opt||{}; if(DEMO||(PUB&&!D.configured)||!crypto.subtle||!window.DecompressionStream) return {skip:1};
   let f; try{ f=await syncFetch(); }catch(e){ return {skip:'net'}; } if(!f) return {skip:'none'};
-  if(+f.seq && +f.seq<=(+S.settings.syncSeq||0) && !opt.force) return {skip:'seen'};   // 이미 받은 판 (seq는 암호 밖 숫자 · 내용 없음)
+  if(+f.seq && +f.seq<=(+S.settings.syncSeq||0) && !opt.force && S.settings.notesV2) return {skip:'seen'};   // notesV2 없으면(예전 판에서 이미 받은 기기) 보고사항 비교를 위해 한 번 더 엶   // 이미 받은 판 (seq는 암호 밖 숫자 · 내용 없음)
   let ask=opt.askPass; if(!ask&&opt.ask&&!SYNC_ASKED&&!LS.getItem(IMPK)){ const k=await kGet(); if(!(k&&k.key)){ SYNC_ASKED=true; ask=syncAsk(); } }
   const K=await syncKey(ask,f); if(!K){ if(ask&&!opt.askPass) toastU('나중에 앱을 다시 열면 받을 수 있어요'); return {skip:'nokey'}; }
   let d; try{ d=await syncOpen(f,K); }catch(e){ return {skip:'key'}; }
   await syncNotes(d); SYNC_PENDING=d; const pl=syncPlan(d); if(!pl.n){ S.settings.syncSeq=Math.max(+S.settings.syncSeq||0,+d.seq||0); save(); return {n:0,dup:pl.dup}; }
   if(SYNC_MODE==='auto'&&!opt.tap){ syncApply(pl); toastU('✅ '+syncNote(pl)); if(CUR==='home') RENDER.home(); return {n:pl.n,applied:1,note:syncNote(pl)}; }
   syncBanner(pl); return {n:pl.n,banner:1}; }
-document.addEventListener('visibilitychange',()=>{ if(!document.hidden&&unlocked) syncCheck(); });
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) return; if(unlocked) syncCheck(); try{ navigator.serviceWorker&&navigator.serviceWorker.getRegistration().then(r=>r&&r.update()).catch(()=>{}); }catch(e){} });
 Object.assign(window.HM,{syncCheck,syncPlan,_S:()=>S,bankBalance});
 
 /* ===================== 🧾 연말정산: 가정별 헌금 합계 + 기부금 내역서 =====================
@@ -3121,7 +3127,9 @@ Object.assign(window.HM,{yeCalc:p=>yeCalc(p||'fy'),yeLoad,_YE:()=>YE});
 $('#brandName').textContent=CH()+' 재정부'; document.title=CH()+' 헌금계수'; if($('#lock-title')) $('#lock-title').textContent=CH()+' 재정부';
 window.addEventListener('afterprint',()=>document.body.classList.remove('p-weekly','p-monthly','p-stmt','p-forms','p-pretty'));
 window.addEventListener('hashchange',()=>{ const t=(location.hash.match(/#(\w+)/)||[])[1]; if(t && t!==CUR && RENDER[t==='sum'?'report':t]) go(t); });
-if(PUB && 'serviceWorker' in navigator && /^https?:/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(()=>{});
+if(PUB && 'serviceWorker' in navigator && /^https?:/.test(location.protocol)) { navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).then(r=>{ try{ r.update(); }catch(e){} }).catch(()=>{});
+  // 새 판이 자리를 잡으면 한 번 새로 고침 (고치는 창이 열려 있으면 닫힌 뒤에)
+  let _hadCtl=!!navigator.serviceWorker.controller, _rl=false; navigator.serviceWorker.addEventListener('controllerchange',()=>{ if(!_hadCtl||_rl) return; const go=()=>{ if(document.querySelector('#modal.on')){ setTimeout(go,1500); return; } _rl=true; location.reload(); }; go(); }); }
 function startApp(){ renderTabs(); refreshLockBtn(); const t=(location.hash.match(/#(\w+)/)||[])[1]; go(t==='imp'?'home':(t||'home')); if(LS.getItem(IMPK)) setTimeout(impCheck,300); else maybeOnboard(); setTimeout(()=>syncCheck({ask:1}),600); }
 if(PUB && !D.configured && !DEMO) showSetup();
 else if(getLock()) showLock(startApp); else { unlocked=true; startApp(); }
