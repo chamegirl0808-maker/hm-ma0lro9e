@@ -2585,11 +2585,11 @@ function rpYear(){ const Yd=yearData(), {acc,T,last}=Yd; const preview=!last.fin
     <div class="rp-wt ymt"><div class="hd"><span>월</span><span>수입</span><span>지출</span><span>차액</span></div>${mrow}<div class="ft"><span>합계</span><span class="gi">${won(ti)}</span><span class="ge">${won(te)}</span><span class="${ti-te<0?'ge':'gi'}">${sgn(r2(ti-te))}</span></div></div></div></section>
    <div class="rp-full ycat"><section class="rp-card"><h2>💵 수입 <span class="rp-r">${won(incTot)}</span></h2>${bars(Yd.incRows,'#2b7a55',incTot)}${zI.length?`<div class="rp-note">없음: ${zI.map(h).join(' · ')}</div>`:''}</section>
    <section class="rp-card"><h2>🧾 지출 <span class="rp-r">${won(expTot)}</span></h2>${bars(Yd.expRows,'#c4572f',expTot)}${zE.length?`<div class="rp-note">없음: ${zE.map(h).join(' · ')}</div>`:''}</section></div>
-   <section class="rp-card wide ynotes"><h2>📝 보고사항</h2>${yearNotesHTML(yearNotesText())}${(typeof S.settings.yearNotes!=='string'&&CFG.yearNotes)?'<div class="rp-edit-hint">엑셀 ‘보고사항’ 시트 내용 그대로예요. 보고서 화면의 ‘✏️ 보고사항 고치기’로 바꿀 수 있어요.</div>':''}</section>
+   <section class="rp-card wide ynotes"><h2>📝 보고사항</h2>${yearNotesHTML(yearNotesText())}${(typeof S.settings.yearNotes!=='string'&&CFG.yearNotes)?'<div class="rp-edit-hint">기본 보고사항이에요. 보고서 화면의 ‘✏️ 보고사항 고치기’로 바꿀 수 있어요.</div>':''}</section>
    ${rpSign()}${rpFoot()}</article>`; }
 function editYearNotes(){ openModal(`<h3>📝 보고사항 고치기</h3><p class="hint">한 줄에 하나씩 적어 주세요. ‘1.’ ‘2.’처럼 번호로 시작하면 항목이 되고, 번호 없는 줄은 앞 항목에 이어져요.</p>
    <textarea id="yn-t" style="width:100%;min-height:240px;font-size:16px;line-height:1.5">${h(yearNotesText())}</textarea>
-   <div class="acts"><button class="btn ghost" id="yn-reset">엑셀 내용으로</button><button class="btn ghost" id="yn-x">취소</button><button class="btn" id="yn-ok">저장</button></div>`);
+   <div class="acts"><button class="btn ghost" id="yn-reset">기본 내용으로</button><button class="btn ghost" id="yn-x">취소</button><button class="btn" id="yn-ok">저장</button></div>`);
   $('#yn-x').onclick=closeModal; $('#yn-reset').onclick=()=>{ $('#yn-t').value=CFG.yearNotes||''; };
   $('#yn-ok').onclick=()=>{ S.settings.yearNotes=$('#yn-t').value.replace(/\s+$/,''); save(); closeModal(); renderRview(); toast('보고사항을 저장했어요'); }; }
 Object.assign(window.HM,{yearData:()=>{ const y=yearData(); return {acc:y.acc,inc:r2(y.T.inc),exp:r2(y.T.exp),dist:y.DIST,incRows:y.incRows.map(r=>[r[1],r[2]]),expRows:y.expRows.map(r=>[r[1],r[2]]),months:y.months.map(x=>[x.m,r2(x.T.inc),r2(x.T.exp)]),last:y.last}; }});
@@ -3027,6 +3027,10 @@ function syncApply(pl){ const t=new Date().toISOString(), imps=S.settings.import
   pl.fixes.forEach(({f,e})=>{ if(e) Object.assign(e,f.to.key?{key:f.to.key}:{},f.to.a!=null?{amount:r2(f.to.a)}:{},f.to.m!=null?{memo:f.to.m}:{}); dn['f:'+f.id]=t; });
   pl.dels.forEach(({x,e})=>{ if(e) S.entries=S.entries.filter(y=>y!==e); dn['d:'+x.id]=t; });
   S.settings.syncSeq=Math.max(+S.settings.syncSeq||0,+SYNC_PENDING?.seq||0); save(); }
+/* 연말정산 기본 보고사항(yearNotes) 받기 — 이미 설치된 기기의 기본값만 바꿈. 그 기기에서 직접 고친 보고사항(S.settings.yearNotes)이 있으면 그것이 계속 우선 */
+function syncNotes(d){ const y=d&&d.yearNotes; if(!y||typeof y.text!=='string'||!y.id) return; const dn=syncDone(); if(dn['y:'+y.id]) return;
+  CFG.yearNotes=y.text; try{ const c=JSON.parse(LS.getItem(CKEY)); if(c&&Array.isArray(c.accounts)){ c.config=c.config||{}; c.config.yearNotes=y.text; LS.setItem(CKEY,JSON.stringify(c)); } }catch(e){}
+  dn['y:'+y.id]=new Date().toISOString(); save(); }
 const mdOf=s=>{ const [,m,d]=s.split('-').map(Number); return m+'/'+d; };
 function syncNote(pl){ const ds=[...pl.dates].sort().map(mdOf); return (ds.length?ds.join(', ')+' 기록이 들어왔어요':'새 기록이 들어왔어요')+(pl.dup?` (이미 있던 ${pl.dup}건은 그대로)`:''); }
 function syncBanner(pl){ if($('#h-sync')) $('#h-sync').remove(); const ba=document.querySelector('#v-home .bigacts'); if(!ba) return; const n=document.createElement('button'); n.id='h-sync'; n.className='imnote';
@@ -3037,7 +3041,7 @@ async function syncCheck(opt){ opt=opt||{}; if(DEMO||(PUB&&!D.configured)||!cryp
   let ask=opt.askPass; if(!ask&&opt.ask&&!SYNC_ASKED&&!LS.getItem(IMPK)){ const k=await kGet(); if(!(k&&k.key)){ SYNC_ASKED=true; ask=syncAsk(); } }
   const K=await syncKey(ask,f); if(!K){ if(ask&&!opt.askPass) toastU('나중에 앱을 다시 열면 받을 수 있어요'); return {skip:'nokey'}; }
   let d; try{ d=await syncOpen(f,K); }catch(e){ return {skip:'key'}; }
-  SYNC_PENDING=d; const pl=syncPlan(d); if(!pl.n){ S.settings.syncSeq=Math.max(+S.settings.syncSeq||0,+d.seq||0); save(); return {n:0,dup:pl.dup}; }
+  syncNotes(d); SYNC_PENDING=d; const pl=syncPlan(d); if(!pl.n){ S.settings.syncSeq=Math.max(+S.settings.syncSeq||0,+d.seq||0); save(); return {n:0,dup:pl.dup}; }
   if(SYNC_MODE==='auto'&&!opt.tap){ syncApply(pl); toastU('✅ '+syncNote(pl)); if(CUR==='home') RENDER.home(); return {n:pl.n,applied:1,note:syncNote(pl)}; }
   syncBanner(pl); return {n:pl.n,banner:1}; }
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden&&unlocked) syncCheck(); });
